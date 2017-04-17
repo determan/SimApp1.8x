@@ -1,0 +1,31 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio 2013
+VisualStudioVersion = 12.0.30723.0
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ModelConverter", "ModelConverter\ModelConverter.csproj", "{E1967BFA-9132-4599-86D4-44B6E11C8895}"
+EndProject
+Global
+	GlobalSection(TeamFoundationVersionControl) = preSolution
+		SccNumberOfProjects = 2
+		SccEnterpriseProvider = {4CA58AB2-18FA-4F8D-95D4-32DDF27D184C}
+		SccTeamFoundationServer = http://nendsss:8080/tfs/simapp3
+		SccLocalPath0 = .
+		SccProjectUniqueName1 = ModelConverter\\ModelConverter.csproj
+		SccProjectName1 = ModelConverter
+		SccLocalPath1 = ModelConverter
+	EndGlobalSection
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{E1967BFA-9132-4599-86D4-44B6E11C8895}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{E1967BFA-9132-4599-86D4-44B6E11C8895}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{E1967BFA-9132-4599-86D4-44B6E11C8895}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{E1967BFA-9132-4599-86D4-44B6E11C8895}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+EndGlobal

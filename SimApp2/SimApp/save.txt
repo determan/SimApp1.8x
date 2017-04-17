@@ -1,0 +1,1801 @@
+using System;
+using System.Threading;
+using System.IO;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.Data;
+using System.Drawing;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+using System.Windows.Forms;
+using System.Windows.Forms.DataVisualization;
+using System.Windows.Forms.DataVisualization.Charting;
+using System.Runtime.InteropServices;
+using SimWrp;
+
+namespace SimApp
+{
+    public partial class Form1 : Form
+    {
+        enum EX_STATE {EBS_EXECUTE=0, EBS_PAUSE, EBS_CONTINUE, EBS_ABORT};
+        private EX_STATE iExBtState;
+        private float fTimeStep;
+        private int iNumSteps;
+        private float fMaxTime;
+        private bool bTimeStepDirty;
+        private bool bNumStepsDirty;
+        private bool bMaxTimeDirty;
+        private int iFreq;
+        private Array straSDNames;
+        private int[] iaIndices;
+        private float[] faData;
+        private float[] faData2;
+        private string[] sLabels;
+        private int iNumVars;
+        private CallBack delP;
+        private System.Drawing.Color clExBt;
+        private SimModel m1;
+        private string strFilePath;
+        private int[] iaInitInds;
+        private double[] daInitVals;
+        private float[] faSFs;
+        //private string strEntry;
+        private string strDataStorePath;
+        private string strReplayFilePath;
+        private bool bLive;
+        private Thread thrProc;
+        private Thread thrCons;
+        private int iResultRow;
+        private Size szWindowSize;
+        private bool bAddResultsHeaders;
+        private bool bSaveNorm = true;
+        private bool bSaveMax = true;
+        private int[] aSizes;
+        private int[] aSizes2;
+        //private StreamWriter sw;
+        private int iSRcnt = -1;
+        private string strMsg = "";
+        private bool bContinue;
+        private bool bDone;
+        private BinaryReader bnryIn;
+        private Rectangle rectScreen;
+        private Version verInfo;
+        private String sModName = "";
+
+
+        private int iMult;
+        private int iCnt;
+        private SeriesChartType chartType = SeriesChartType.Line;
+        //private int iNum;
+        PlotEventArgs ee;
+        private PlotEventArgs[] aee;
+        bool readerFlag = false;  // State flag
+        public delegate void CallBack([In][MarshalAs(UnmanagedType.I4)] Int32 iNumS, [In][MarshalAs(UnmanagedType.R4)] float fX, [In][MarshalAs(UnmanagedType.R4)] float fY);
+
+        private InitCondInfo[] aICs;
+        private int iCSize;
+        private int iNumIC;
+
+        public struct ConstInfo
+        {
+            public string sName;
+            public string sType;
+            public double dValue;
+        }
+        ConstInfo[] ciaInfo;
+
+        public class InitCondInfo
+        {
+            public int iSecNum;
+            public int iRowNum;
+            public int iIndex;
+            public string strLabel;
+            public double dValue;
+
+            public InitCondInfo(int iSN, int iRN, int iI, string strL, double dV)
+            {
+                iSecNum = iSN;
+                iRowNum = iRN;
+                iIndex = iI;
+                strLabel = strL;
+                dValue = dV;
+            }
+
+            public void Set(int iSN, int iRN, int iI, string strL, double dV)
+            {
+                iSecNum = iSN;
+                iRowNum = iRN;
+                iIndex = iI;
+                strLabel = strL;
+                dValue = dV;
+            }
+        }
+
+        public class PlotEventArgs : EventArgs
+        {
+            public PlotEventArgs(int iNumS, float fX, float fY)
+            {
+                iDataNum = iNumS;
+                dX = fX;
+                dY = fY;
+            }
+            public int iDataNum;
+            public float dX;
+            public float dY;
+        }
+
+        public void OnPlot(Int32 iNumS, float fX, float fY)
+        {
+            lock (this)  // Enter synchronization block
+            {
+                if (readerFlag)
+                {      // Wait until Cell.ReadFromCell is done consuming.
+                    try
+                    {
+                        Monitor.Wait(this);   // Wait for the Monitor.Pulse in
+                        // ReadFromCell
+                    }
+                    catch (SynchronizationLockException e)
+                    {
+                        this.Invoke(this.delSetStatus, new Object[] { e.Message });
+                    }
+                    catch (ThreadInterruptedException e)
+                    {
+                        this.Invoke(this.delSetStatus, new Object[] { e.Message });
+                    }
+                }
+                try
+                {
+                    faData2 = (float[])faData.Clone();
+                    ee = new PlotEventArgs(iNumS, fX, fY);
+                    readerFlag = true;
+                    Monitor.Pulse(this);
+                }
+                catch(Exception e)
+                {
+                    this.Invoke(this.delSetStatus, new Object[] { e.Message });
+                }
+            }
+        }
+
+        public void PlotValues()
+        {
+            int ii, jj;
+            float fTime;
+            try
+            {
+                iCnt = 0;
+                int iNumPnts = iMult * iNumVars;
+                aee = new PlotEventArgs[iNumPnts];
+                bool bDone = false;
+                while (!bDone)
+                {
+                    lock (this)   // Enter synchronization block
+                    {
+                        if (!readerFlag)
+                        {            // Wait until Cell.WriteToCell is done producing
+                            try
+                            {
+                                // Waits for the Monitor.Pulse in WriteToCell
+                                Monitor.Wait(this);
+                            }
+                            catch (SynchronizationLockException e)
+                            {
+                                this.Invoke(this.delSetStatus, new Object[] { e.Message });
+                            }
+                            catch (ThreadInterruptedException e)
+                            {
+                                this.Invoke(this.delSetStatus, new Object[] { e.Message });
+                            }
+                        }
+                        if (-ee.iDataNum == 1)
+                            this.Invoke(this.delUpdateGraph0, new Object[] { ee });
+                        if (-ee.iDataNum == 2)
+                        {
+                            this.Invoke(this.delUpdateGraph0, new Object[] { ee });
+                            if(iCnt>0)
+                                this.Invoke(this.delUpdateGraph, new Object[] { iCnt, aee });
+                            bDone = true;
+                        }
+                        if (-ee.iDataNum == 3)
+                        {
+                            ii = 0;
+                            jj = 0;
+
+                            for (int i = 0; i < iMult; i++)
+                            {
+                                fTime = faData2[jj++]; //time
+                                for (int k = 0; k < iNumVars; k++)
+                                {
+                                    PlotEventArgs earg = new PlotEventArgs(k, fTime, faData2[jj++]);
+                                    aee.SetValue(earg, ii++);
+                                    //sw.Write("PlotValues, {0}, {1}, {2}, {3}, {4}", ii, jj, k, fTime, faData[jj - 1]);
+                                    //sw.WriteLine();
+                                }
+                            }
+                            this.Invoke(this.delUpdateGraph, new Object[] { iNumPnts, aee });
+                         }
+                        readerFlag = false;
+                        Monitor.Pulse(this);   // Pulse tells Cell.WriteToCell that
+                    }// Exit synchronization block
+                }
+                //move temp file
+                //sw.Close();
+                if (bLive)
+                {
+                    Directory.CreateDirectory(strDataStorePath);
+                    Directory.Move(".\\output.bin", strFilePath);
+                }
+            }
+            catch (Exception e)
+            {
+                this.Invoke(this.delSetStatus, new Object[] { e.Message });
+            }
+        }
+
+        private void InitTabControl()
+        {
+            dg1.Rows.Clear();
+            dg2.Rows.Clear();
+            dg3.Rows.Clear();
+            dg1.Columns[0].Width = 200;
+            dg2.Columns[0].Width = 200;
+            dg3.Columns[0].Width = 200;
+            tcInit.TabPages[0].BackColor = System.Drawing.SystemColors.ControlDark;
+            tcInit.TabPages[0].Text = "Core Parameters";
+            tcInit.TabPages[1].BackColor = System.Drawing.SystemColors.ControlDark;
+            tcInit.TabPages[1].Text = "Reactivity Parameters";
+            tcInit.TabPages[2].BackColor = System.Drawing.SystemColors.ControlDark;
+            tcInit.TabPages[2].Text = "Operational Parameters";
+            foreach (InitCondInfo ici in aICs)
+            {
+                if (ici.iSecNum == 0)
+                {
+                    DataGridViewRow row = (DataGridViewRow)dg1.Rows[0].Clone();
+                    row.Cells[0].Value = ici.strLabel;
+                    row.Cells[1].Value = ici.fValue.ToString();
+                    dg1.Rows.Add(row);
+                }
+                if (ici.iSecNum == 1)
+                {
+                    DataGridViewRow row = (DataGridViewRow)dg2.Rows[0].Clone();
+                    row.Cells[0].Value = ici.strLabel;
+                    row.Cells[1].Value = ici.fValue.ToString();
+                    dg2.Rows.Add(row);
+                }
+                if (ici.iSecNum == 2)
+                {
+                    DataGridViewRow row = (DataGridViewRow)dg3.Rows[0].Clone();
+                    row.Cells[0].Value = ici.strLabel;
+                    row.Cells[1].Value = ici.fValue.ToString();
+                    dg3.Rows.Add(row);
+                }
+            }
+        }
+
+        public void InitReplayList()
+        {
+            cbReplayList.Items.Clear();
+            string s = Directory.GetCurrentDirectory();
+            if (!Directory.Exists(strDataStorePath))
+            {
+                Directory.CreateDirectory(strDataStorePath);
+            }
+            cbReplayList.Items.AddRange(Directory.GetFiles(strDataStorePath));
+        }
+
+        public void SetICs()
+        {
+            int j=0, iType=-1, k=-1,l=-1,m=-1,n;
+            iCSize = m1.CSize();
+            float[] fICs = new float[iCSize];
+            GCHandle handle2 = GCHandle.Alloc(fICs, GCHandleType.Pinned);
+            var faptr = handle2.AddrOfPinnedObject();
+            m1.ICs(faptr);
+            handle2.Free();
+            iNumIC = 0;
+            for (int i = 0; i < iCSize; i++)
+            {
+                ciaInfo[i].fValue = fICs[i];
+                if (ciaInfo[i].sType != "Constant")
+                    iNumIC++;
+            }
+            m1.SetNumIC(iNumIC);
+            aICs = new InitCondInfo[iNumIC];
+            for (int i = 0; i < iCSize; i++)
+            {
+                if (ciaInfo[i].sType != "Constant")
+                {
+                    if (ciaInfo[i].sType.IndexOf("Core") == 0)
+                    {
+                        iType = 0;
+                        k++;
+                    }
+                    if (ciaInfo[i].sType.IndexOf("Reactivity") == 0)
+                    {
+                        iType = 1;
+                        l++;
+                    }
+                    if (ciaInfo[i].sType.IndexOf("Operational") == 0)
+                    {
+                        iType = 2;
+                        m++;
+                    }
+                    if (iType == 0)
+                        n = k;
+                    else if (iType == 1)
+                        n = l;
+                    else
+                        n = m;
+                    if(iType>=0)
+                        aICs[j] = new InitCondInfo(iType, n, i, ciaInfo[i].sName, ciaInfo[i].fValue);
+                    j++;
+                }
+            }
+            InitTabControl();
+        }
+
+        public void ResetICs()
+        {
+            aICs = new InitCondInfo[iNumIC];
+            aICs[0] = new InitCondInfo(0, 0, 0, "TKW", 6.500e-07F);
+            aICs[1] = new InitCondInfo(0, 1, 23, "alpha", 4.0e-04F);
+            aICs[2] = new InitCondInfo(0, 2, 24, "TKF", 6.500e-07F);
+            aICs[3] = new InitCondInfo(0, 3, 25, "Pr", 6.950F);
+            aICs[4] = new InitCondInfo(0, 4, 26, "bta", 5.23e-04F);
+            aICs[5] = new InitCondInfo(0, 5, 27, "kinvis", 7.9091e-07F);
+            aICs[6] = new InitCondInfo(0, 6, 28, "THDIFF", 1.58e-07F);
+            aICs[7] = new InitCondInfo(0, 7, 29, "CV", 3.4e-03F);
+            aICs[8] = new InitCondInfo(0, 8, 30, "Pr2", 3.00F);
+            aICs[9] = new InitCondInfo(0, 9, 31, "V0", 0.011627F);
+            aICs[10] = new InitCondInfo(0, 10, 32, "HCORE", 0.21695F);
+            aICs[11] = new InitCondInfo(0, 11, 33, "CSA", 0.3648F);
+            aICs[12] = new InitCondInfo(0, 12, 34, "VP0", 0.0026F);
+            aICs[13] = new InitCondInfo(0, 13, 35, "CCR", 0.00248F);
+            aICs[14] = new InitCondInfo(0, 14, 36, "AREAHT", 0.3648F);
+            aICs[15] = new InitCondInfo(0, 15, 37, "MW", 0.2F);
+            aICs[16] = new InitCondInfo(0, 16, 38, "CPW", 0.5e-03F);
+            aICs[17] = new InitCondInfo(1, 0, 39, "ALF", 0.0344F);
+            aICs[18] = new InitCondInfo(1, 1, 40, "PHI", 28.679F);
+            aICs[19] = new InitCondInfo(1, 2, 41, "I10", 0.0409F);
+            aICs[20] = new InitCondInfo(1, 3, 42, "I9", 0.0684F);
+            aICs[21] = new InitCondInfo(1, 4, 43, "I8", 0.0928F);
+            aICs[22] = new InitCondInfo(1, 5, 44, "I7", 0.1142F);
+            aICs[23] = new InitCondInfo(1, 6, 45, "I6", 0.1128F);
+            aICs[24] = new InitCondInfo(1, 7, 46, "I5", 0.1127F);
+            aICs[25] = new InitCondInfo(1, 8, 47, "I4", 0.1379F);
+            aICs[26] = new InitCondInfo(1, 9, 48, "I3", 0.1276F);
+            aICs[27] = new InitCondInfo(1, 10, 49, "I2", 0.1089F);
+            aICs[28] = new InitCondInfo(1, 11, 50, "I1", 0.0839F);
+            aICs[29] = new InitCondInfo(1, 12, 51, "FRA10", 0.0629F);
+            aICs[30] = new InitCondInfo(1, 13, 52, "FRA9", 0.0835F);
+            aICs[31] = new InitCondInfo(1, 14, 53, "FRA8", 0.0964F);
+            aICs[32] = new InitCondInfo(1, 15, 54, "FRA7", 0.1068F);
+            aICs[33] = new InitCondInfo(1, 16, 55, "FRA6", 0.1073F);
+            aICs[34] = new InitCondInfo(1, 17, 56, "FRA5", 0.1061F);
+            aICs[35] = new InitCondInfo(1, 18, 57, "FRA4", 0.1188F);
+            aICs[36] = new InitCondInfo(1, 19, 58, "FRA3", 0.1160F);
+            aICs[37] = new InitCondInfo(1, 20, 59, "FRA2", 0.1068F);
+            aICs[38] = new InitCondInfo(1, 21, 60, "FRA1", 0.0954F);
+            aICs[39] = new InitCondInfo(1, 22, 61, "MNT", 1.70e-04F);
+            aICs[40] = new InitCondInfo(1, 23, 62, "BETA", 0.0085F);
+            aICs[41] = new InitCondInfo(1, 24, 63, "TAU", 0.1818F);
+            aICs[42] = new InitCondInfo(2, 0, 64, "T0", 25.0F);
+            aICs[43] = new InitCondInfo(2, 1, 65, "TC0", 5.0F);
+            aICs[44] = new InitCondInfo(2, 2, 66, "P0", 1.0e+05F);
+            aICs[45] = new InitCondInfo(2, 3, 739, "VNI", 1.8333e-01F);
+            aICs[46] = new InitCondInfo(2, 4, 67, "RRTE", 0.001F);
+            aICs[47] = new InitCondInfo(2, 5, 68, "FLAG", 0.0F);
+            aICs[48] = new InitCondInfo(2, 6, 69, "Rmax", 1.90F);
+            aICs[49] = new InitCondInfo(2, 7, 70, "WCR", 0.2161F);
+            aICs[50] = new InitCondInfo(2, 8, 71, "MCLUMP", 0.0163F);
+            aICs[51] = new InitCondInfo(2, 9, 72, "FE", 0.8879F);
+            aICs[52] = new InitCondInfo(2, 10, 73, "FC", 84.2785F);
+            aICs[53] = new InitCondInfo(2, 11, 74, "A", 0.0F);
+            //update IC labels
+            PlLabels formPlLabs = new PlLabels(sModName);
+            formPlLabs.SaveLabels(ref aICs);
+            InitTabControl();
+        }
+
+        public Form1()
+        {
+            try
+            { 
+                InitializeComponent();
+                m1 = new SimWrp.SimModel();
+                m1.GetName(ref sModName);
+                Text = sModName;
+                ciaInfo = new ConstInfo[m1.CSize()];
+                MakeStateLookup();
+                fTimeStep = 0.0f;
+                iNumSteps = 0;
+                fMaxTime = 0.0f;
+                iFreq = 0;
+    //            iNum = 100;
+                iExBtState = EX_STATE.EBS_EXECUTE;
+                readerFlag = false;
+                delUpdateGraph = new UpdateGraph(UpdateGraphMethod);
+                delUpdateGraph0 = new UpdateGraph0(UpdateGraphMethod0);
+                delSetStatus = new SetStatus(SetStatusMessage);
+
+                chDataGraph.Series[0].ChartType = chartType;
+                chDataGraph.ChartAreas[0].AxisX.Minimum = 0.0;
+                chDataGraph.ChartAreas[0].AxisY.Minimum = -10.0;
+                chDataGraph.ChartAreas[0].AxisY.Maximum = 10.0;
+                chDataGraph.ChartAreas[0].BackColor = System.Drawing.Color.Black;
+                chDataGraph.ChartAreas[0].AxisX.LineColor = System.Drawing.Color.White;
+                chDataGraph.ChartAreas[0].AxisX.LabelStyle.ForeColor = System.Drawing.Color.Red;
+                chDataGraph.ChartAreas[0].AxisX.Title = "Time";
+                chDataGraph.ChartAreas[0].AxisX.TitleForeColor = System.Drawing.Color.White;
+                chDataGraph.ChartAreas[0].AxisX.MajorGrid.LineColor = System.Drawing.Color.Gray;
+                chDataGraph.ChartAreas[0].AxisX.MajorGrid.LineDashStyle = ChartDashStyle.Dot;
+                chDataGraph.ChartAreas[0].AxisY.LineColor = System.Drawing.Color.White;
+                chDataGraph.ChartAreas[0].AxisY.LabelStyle.ForeColor = System.Drawing.Color.Red;
+                chDataGraph.ChartAreas[0].AxisY.LabelStyle.Interval = 1.0;
+                chDataGraph.ChartAreas[0].AxisY.Title = "";
+                chDataGraph.ChartAreas[0].AxisY.Crossing = 0.0;
+                chDataGraph.ChartAreas[0].AxisY.MajorGrid.LineColor = System.Drawing.Color.Gray;
+                chDataGraph.ChartAreas[0].AxisY.MajorGrid.LineDashStyle = ChartDashStyle.Dot;
+                chDataGraph.ChartAreas[0].AxisY.MajorGrid.Interval = 2.0;
+
+                clExBt = btnExecute.BackColor;
+
+                strDataStorePath = ".\\SimData";
+                InitReplayList();
+                strReplayFilePath = "";
+                bLive = true;
+
+                timer1.Tick += timer1_Tick;
+                szWindowSize = this.Size;
+                bAddResultsHeaders = true;
+                rectScreen = Screen.FromControl(this).Bounds;
+
+                //ResetICs();
+                SetICs();
+            }
+            catch (Exception e)
+            {
+                tbStatus.Text = e.Message;
+            }
+        }
+
+        void timer1_Tick(object sender, EventArgs e)
+        {
+            try
+            {
+                int iSz = cbReplayList.Items.Count;
+                InitReplayList();
+                if (cbReplayList.Items.Count > iSz)
+                {
+                    timer1.Enabled = false;
+                    timer1.Stop();
+                }
+            }
+            catch (Exception ee)
+            {
+                tbStatus.Text = ee.Message;
+            }
+        }
+
+        private void RunSim()
+        {
+            try 
+            {
+                IntPtr intptr_delegate = Marshal.GetFunctionPointerForDelegate(delP);
+                faData = new float[iMult * (iNumVars + 1)];
+                GCHandle handle = GCHandle.Alloc(iaIndices, GCHandleType.Pinned);
+                var iaptr = handle.AddrOfPinnedObject();
+                GCHandle handle2 = GCHandle.Alloc(faData, GCHandleType.Pinned);
+                var faptr = handle2.AddrOfPinnedObject();
+                GCHandle handle3 = GCHandle.Alloc(iaInitInds, GCHandleType.Pinned);
+                var iaptr2 = handle3.AddrOfPinnedObject();
+                GCHandle handle4 = GCHandle.Alloc(daInitVals, GCHandleType.Pinned);
+                var daptr2 = handle4.AddrOfPinnedObject();
+                m1.Run(intptr_delegate, fTimeStep, iNumSteps, fMaxTime, cbClear.Checked, iFreq, iMult, iNumVars, iaptr, faptr, iaptr2, daptr2);
+                handle.Free();
+                handle2.Free();
+                handle3.Free();
+                handle4.Free();
+            }
+            catch (Exception e)
+            {
+                this.Invoke(this.delSetStatus, new Object[] { e.Message });
+            }
+        }
+
+        private void RunReplay()
+        {
+            int iNS, iNVars, iNSF, iRecSize, iNumBytesSkip, iOff;
+            long lBR;
+            float fTS, fMT;
+            float[] faDataRec;
+            try
+            {
+                faData = new float[iMult * (iNumVars + 1)];
+                //open file
+                FileInfo fi = new FileInfo(strFilePath);
+
+                bnryIn = new BinaryReader(File.Open(strFilePath, FileMode.Open));
+                //read Header, mainly SFs
+                iNS = bnryIn.ReadInt32();
+                iNVars = bnryIn.ReadInt32();
+                iFreq = bnryIn.ReadInt32();
+                fTS = bnryIn.ReadSingle();
+                fMT = bnryIn.ReadSingle();
+                //read in ICs
+                for (int i = 0; i < iNumIC; i++)
+                {
+                    bnryIn.ReadSingle();
+                }
+                iNSF = iNVars - 1;
+                iRecSize = iNVars * 4;
+                faSFs = new float[iNSF];
+                faDataRec = new float[iNVars];
+                for (int i = 0; i < iNSF; i++)
+                    faSFs[i] = bnryIn.ReadSingle();
+                lBR = (5 + iNumIC + iNSF) * 4; 
+                iNumBytesSkip = (iFreq / iMult - 1) * iRecSize;
+                if (iNumBytesSkip < 0) iNumBytesSkip = 0;
+                bDone = false;
+                while (!bDone)
+                {
+                    if (bContinue)
+                    {
+                        for (int i = 0; i < iMult; i++)
+                        {
+                            if (fi.Length - lBR < iRecSize)
+                                break;
+                            //read next plotted record
+                            for (int ii = 0; ii < iNVars; ii++)
+                            {
+                                faDataRec[ii] = bnryIn.ReadSingle();
+                            }
+                            //sw.Write("RunReplay1, 0, {0}", faDataRec[0]);
+                            //sw.WriteLine();
+                            lBR += iRecSize;
+                            iOff = i * (iNumVars + 1);
+                            faData[iOff] = faDataRec[0];
+                            //sw.Write("RunReplay2, 0, {0}",faData[0]);
+                            //sw.WriteLine();
+                            for (int j = 0; j < iNumVars; j++)
+                            {
+                                for (int k = 1; k < iNVars; k++)
+                                {
+                                    if (k - 1 == iaIndices[j])
+                                    {
+                                        faData[iOff + j + 1] = faDataRec[k] / faSFs[iaIndices[j]];
+                                        //sw.Write("RunReplay3, {0}, {1}, {2}, {3}", j + 1, faData[j + 1], k, faDataRec[k]);
+                                        //sw.WriteLine();
+                                    }
+                                }
+                            }
+                            //skip non-plotted records
+                            if (iNumBytesSkip > 0)
+                            {
+                                if (fi.Length - lBR <= iNumBytesSkip)
+                                    break;
+                                bnryIn.BaseStream.Seek(iNumBytesSkip, SeekOrigin.Current);
+                            }
+                            lBR += iNumBytesSkip;
+                        }//for
+                        delP(-3, 0, 0);
+                        if (fi.Length - lBR < iRecSize)
+                            break;
+                    }
+                }//while
+                //close file
+                bnryIn.BaseStream.Close();
+                bnryIn.Close();
+                bnryIn.Dispose();
+                delP(-2, 0, 0);
+            }
+            catch (Exception e)
+            {
+                this.Invoke(this.delSetStatus, new Object[] { e.Message });
+            }
+        }
+
+        private bool FileExists(string strFP)
+        {
+            string[] straFiles;
+            string str;
+            int iNS, iNV, iF;
+            float fTS, fMT;
+            bool bExists = false;
+            try
+            {
+                straFiles = Directory.GetFiles(strDataStorePath, "*.bin");
+                strReplayFilePath = "";
+                foreach (string strPath in straFiles)
+                {
+                    bnryIn = new BinaryReader(File.Open(strPath, FileMode.Open));
+                    //read Header, mainly SFs
+                    iNS = bnryIn.ReadInt32();
+                    iNV = bnryIn.ReadInt32();    //not used here, only for reading rest of file
+                    iF = bnryIn.ReadInt32();
+                    fTS = bnryIn.ReadSingle();
+                    fMT = bnryIn.ReadSingle();
+                    bnryIn.BaseStream.Close();
+                    bnryIn.Close();
+                    bnryIn.Dispose();
+                    str = String.Format("{0}\\{1:G}s_{2:G}s_{3}_{4}x.bin", strDataStorePath, fMT, fTS, iNS, iF);
+                    if (str == strFP)
+                    {
+                        strReplayFilePath = strPath;
+                        bExists = true;
+                        break;
+                    }
+                }
+            }
+            catch (Exception e)
+            {
+                tbStatus.Text = e.Message;
+                bExists = false;
+            }
+            return bExists;
+        }
+
+        private void ExecuteMouseClick(object sender, MouseEventArgs e)
+        {
+            try 
+            {
+                labDone.Visible = false;
+                switch (iExBtState)
+                {
+                    case EX_STATE.EBS_EXECUTE:
+                        if (tbTimeStep.Text != "")
+                            fTimeStep = Single.Parse(tbTimeStep.Text);
+                        else
+                            fTimeStep = 0;
+                        if (tbNumSteps.Text != "")
+                            iNumSteps = Int32.Parse(tbNumSteps.Text);
+                        else
+                            iNumSteps = 0;
+                        if (tbMaxTime.Text != "")
+                            fMaxTime = Single.Parse(tbMaxTime.Text);
+                        else
+                            fMaxTime = 0;
+                        if (fTimeStep <= Constants.constants.fEpsilon || iNumSteps <= 0 || fMaxTime <= Constants.constants.fEpsilon)
+                        {
+                            tbStatus.Text = "Set simulation parameters prior to execution";
+                            return;
+                        }
+                        ValidateInputs();
+                        if (iFreq == 0)
+                            return;
+                        float fMaxSave = fMaxTime;
+                        int iIntSize, iNumInts = 1, iMlt = 1;
+                        while (fMaxTime < 1)
+                        {
+                            iMlt *= 10;
+                            fMaxTime *= 10;
+                        }
+                        iIntSize = (int)fMaxTime;
+                        //plot time scale calcs
+                        while (iNumInts<4)
+                        {
+                            if (iIntSize%2 == 0)
+                            {// even, split in half
+                                iIntSize = iIntSize / 2;
+                                iNumInts *= 2;
+                            }
+                            else
+                            {// odd, check odds
+                                for (int ii = 3; ii < 9; ii+=2 )
+                                {
+                                    if (iIntSize % ii == 0)
+                                    {// even, split in half
+                                        iIntSize = iIntSize / ii;
+                                        iNumInts *= ii;
+                                        break;
+                                    }
+                                    if(ii==7)
+                                    {
+                                        //2, 3, 4, 5, 6, 7, 8, 9, 10 are all out, so must be a larger odd, probably prime
+                                        //convert interval to a larger even interval and start over
+                                        iIntSize = (iIntSize / 2 + 1) * 2;
+                                        fMaxTime = (float)iIntSize;
+                                    }
+                                }//for
+                            }
+                        }//while
+                        string strFPath = String.Format("{0}\\{1:G}s_{2:G}s_{3}_{4}x.bin", strDataStorePath, fMaxTime, fTimeStep, iNumSteps, iFreq);
+                        if (FileExists(strFPath))
+                        {
+                            string strMess = String.Format("The Simulation exists in the data store as: {0}.  OK - Replay, Cancel - Overwrite", strReplayFilePath);
+                            if (MessageBox.Show(strMess, "Simulation Exists", MessageBoxButtons.OKCancel) == DialogResult.OK)
+                            {
+                                strFilePath = strReplayFilePath;
+                                tbStatus.Text = "Replay file: " + strFilePath;
+                                labReplayInd.Visible = true;
+                                bLive = false;
+                            }
+                            else
+                            {
+                                strFilePath = strReplayFilePath;
+                                tbStatus.Text = "Performing new simulation";
+                                if (bnryIn != null)
+                                {
+                                    bnryIn.Close();
+                                    Thread.Sleep(500);
+                                }
+                                File.Delete(strFilePath);
+                                bLive = true;
+                                labReplayInd.Visible = false;
+                            }
+                        }
+                        else
+                        {
+                            frmSpecName formName = new frmSpecName(strDataStorePath);
+                            DialogResult dr = formName.ShowDialog(this);
+                            if (dr == DialogResult.OK)
+                            {
+                                strFilePath = formName.FileName();
+                            }
+                            else
+                                strFilePath = String.Format("{0}\\{1:G}s_{2:G}s_{3}_{4}x.bin", strDataStorePath, fMaxTime, fTimeStep, iNumSteps, iFreq);
+                            tbStatus.Text = "Performing new simulation";
+                            bLive = true;
+                            labReplayInd.Visible = false;
+                        }
+                        //sw = new StreamWriter("C:\\SimApp\\outputcs.csv");
+                        while ((double)(iIntSize * iNumInts) / iMlt - (2 * fMaxSave) > -1e-6)
+                            iMlt *= 2;
+                        chDataGraph.ChartAreas[0].AxisX.Maximum = (double)(iIntSize * iNumInts)/iMlt;
+                        chDataGraph.ChartAreas[0].AxisX.LabelStyle.Interval = (double)iIntSize/iMlt;;
+                        chDataGraph.ChartAreas[0].AxisX.MajorGrid.Interval = (double)(2 * iIntSize)/iMlt;;
+                        chDataGraph.Series.Clear();
+                        GCHandle gch;
+                        bAddResultsHeaders = true;
+                        if (bLive)
+                        {
+                            UpdateParameters();
+                            thrProc = new Thread(new ThreadStart(RunSim));
+                            iMult = 1;
+                            timer1.Interval = 500;
+                            timer1.Enabled = true;
+                            timer1.Start();
+                        }
+                        else
+                        {
+                            if (strReplayFilePath != "" && strFilePath=="")
+                                strFilePath = strReplayFilePath;
+                            thrProc = new Thread(new ThreadStart(RunReplay));
+                            iMult = 1;
+                            bnryIn = new BinaryReader(File.Open(strFilePath, FileMode.Open));
+                            //read Header, mainly SFs
+                            bnryIn.ReadInt32();
+                            bnryIn.ReadInt32();
+                            bnryIn.ReadInt32();
+                            bnryIn.ReadSingle();
+                            bnryIn.ReadSingle();
+                            //read in ICs
+                            for (int i = 0; i < iNumIC; i++)
+                            {
+                                aICs[i].fValue = bnryIn.ReadSingle();
+                            }
+                            InitTabControl();
+                            bnryIn.BaseStream.Close();
+                            bnryIn.Close();
+                            bnryIn.Dispose();
+                        }
+                        //m1 = new SimWrp.SimModel();
+                        //String sName = "";
+                        //m1.GetName(ref sName);
+                        gch = GCHandle.Alloc(delP);
+                        delP = new CallBack(OnPlot);
+                        thrCons = new Thread(new ThreadStart(PlotValues));
+                        bContinue = true;
+                        thrProc.Start(); 
+                        thrCons.Start();
+                        gch.Free();
+                        iExBtState = EX_STATE.EBS_PAUSE;
+                        btnExecute.Text = "Pause";
+                        break;
+                    case EX_STATE.EBS_PAUSE:
+                        iExBtState = EX_STATE.EBS_CONTINUE;
+                         btnExecute.Text = "Continue";
+                         if (bLive)
+                             m1.Continue(false);
+                         else
+                             bContinue = false;
+                       break;
+                    case EX_STATE.EBS_CONTINUE:
+                       iExBtState = EX_STATE.EBS_PAUSE;
+                       btnExecute.Text = "Pause";
+                       if (bLive)
+                            m1.Continue(true);
+                       else
+                            bContinue = true;
+                       break;
+                    case EX_STATE.EBS_ABORT:
+                       iExBtState = EX_STATE.EBS_EXECUTE;
+                       btnExecute.Text = "Execute";
+                       btnExecute.BackColor = clExBt;
+                       if (bLive)
+                       {
+                           thrProc.Abort();
+                           thrCons.Abort();
+                       }
+                       else
+                       {
+                           bDone = true;
+                       }
+
+                       break;
+                }
+            }
+            catch (Exception ee)
+            {
+                tbStatus.Text = ee.Message;
+            }
+        }
+
+        private void ExecuteMouseHover(object sender, EventArgs e)
+        {
+            try
+            {
+                if (iExBtState == EX_STATE.EBS_EXECUTE)
+                {
+                    if (tbTimeStep.Text != "")
+                        fTimeStep = Single.Parse(tbTimeStep.Text);
+                    else
+                        fTimeStep = 0;
+                    if (fTimeStep < 0)
+                    {
+                        fTimeStep *= -1.0f;
+                        tbTimeStep.Text = fTimeStep.ToString();
+                    }
+                    if (bTimeStepDirty || bNumStepsDirty)
+                    {
+                        if (tbNumSteps.Text != "")
+                            iNumSteps = Int32.Parse(tbNumSteps.Text);
+                        else
+                            iNumSteps = 0;
+                        if (iNumSteps < 0)
+                        {
+                            iNumSteps *= -1;
+                            tbNumSteps.Text = iNumSteps.ToString();
+                        }
+                        if (iNumSteps > 1 && fTimeStep > Constants.constants.fEpsilon)
+                        {
+                            fMaxTime = (iNumSteps - 1) * fTimeStep;
+                            tbMaxTime.Text = fMaxTime.ToString();
+                        }
+                    }
+                    if (bMaxTimeDirty)
+                    {
+                        if (tbMaxTime.Text != "")
+                            fMaxTime = Single.Parse(tbMaxTime.Text);
+                        else
+                            fMaxTime = 0;
+                        if (fMaxTime < 0)
+                        {
+                            fMaxTime *= -1.0f;
+                            tbMaxTime.Text = fMaxTime.ToString();
+                        }
+                        if (fTimeStep > Constants.constants.fEpsilon && fMaxTime > Constants.constants.fEpsilon)
+                        {
+                            iNumSteps = (int)(fMaxTime / fTimeStep) + 1;
+                            tbNumSteps.Text = iNumSteps.ToString();
+                        }
+                    }
+                    bTimeStepDirty = false;
+                    bNumStepsDirty = false;
+                    bMaxTimeDirty = false;
+                }
+                else if (iExBtState == EX_STATE.EBS_CONTINUE || iExBtState == EX_STATE.EBS_PAUSE)
+                {
+                    //iExBtState = EX_STATE.EBS_ABORT;
+                    //btnExecute.Text = "ABORT";
+                    //clExBt = btnExecute.BackColor;
+                    //btnExecute.BackColor = System.Drawing.Color.Red;
+                }
+            }
+            catch (Exception ee)
+            {
+                tbStatus.Text = ee.Message;
+            }
+        }
+
+        public void MakeStateLookup()
+        {
+            //read SimDll13.cpp, Derivatives routine to get state variable names and order in array
+            //two passes: first pass just count state vars
+            try
+            {
+                int iStart, iLen, iStart2, iLen2, iIndex,j=0;
+                string strBuffer, strSDName, strSDName2;
+                string strFileName = ".\\"+sModName+".h";
+                StreamReader strReader = new StreamReader(strFileName);
+                cbStateVarList.Items.Clear();
+                for (int i = 0; i < 2; i++)
+                {
+                    iIndex = 0;
+                    while (!strReader.EndOfStream)
+                    {
+                        strBuffer = strReader.ReadLine();
+                        if (strBuffer.Contains("//STATE_VAR") || strBuffer.Contains("//NS_VAR"))
+                        {
+                            if (i == 1)
+                            {   //second pass, so acquire sd names
+                                iStart2 = strBuffer.IndexOf("SIM_DATA ");
+                                if (iStart2 >= 0)
+                                    iStart2 = iStart2 + 9;
+                                iLen2 = strBuffer.IndexOf(';') - iStart2;
+                                iStart = strBuffer.IndexOf("//STATE_VAR");
+                                if (iStart >= 0)
+                                    iStart = iStart + 12;
+                                else
+                                {
+                                    iStart = strBuffer.IndexOf("//NS_VAR") + 9;
+                                }
+                                iLen = strBuffer.Length - iStart;
+                                strSDName = strBuffer.Substring(iStart, iLen);
+                                if (strSDName == "")
+                                {
+                                    strSDName2 = strBuffer.Substring(iStart2, iLen2);
+                                    strSDName2 = strSDName2.Replace("*", "");
+                                    strSDName2 = strSDName2.Replace("m_sd", "");
+                                }
+                                else
+                                    strSDName2 = strSDName;
+                                straSDNames.SetValue(strSDName2, iIndex);
+                                if (strSDName!="")
+                                    cbStateVarList.Items.Add(strSDName);
+                            }
+                            iIndex++;   //just count SD items on first pass
+                        }
+                        else if (strBuffer.Contains("//CONST"))
+                        {
+                            int iPos, iPos2;
+                            if (i == 1)
+                            {   //second pass, so acquire sd names
+                                iPos = strBuffer.IndexOf('[');
+                                if (iPos >= 0)
+                                {
+                                    iPos2 = strBuffer.IndexOf(']');
+                                    if (iPos2 >= 0)
+                                    {
+                                        ciaInfo[j].sName = strBuffer.Substring(iPos + 1, iPos2 - iPos - 1);
+                                        strBuffer = strBuffer.Substring(iPos2 + 1);
+                                    }
+                                }
+                                iPos = strBuffer.IndexOf('[');
+                                if (iPos >= 0)
+                                {
+                                    iPos2 = strBuffer.IndexOf(']');
+                                    if (iPos2 >= 0)
+                                        ciaInfo[j].sType = strBuffer.Substring(iPos + 1, iPos2 - iPos - 1);
+                                }
+                                j++;
+                            }
+                        }
+                    }//while
+                    if(i==0)
+                    {   //first pass so create array
+                        straSDNames = Array.CreateInstance(typeof(string), iIndex);
+                        strReader.Close();
+                        strReader = new StreamReader(strFileName);
+                    }
+                }//for
+                strReader.Close();
+            }
+            catch(Exception e)
+            {
+                MessageBox.Show(e.Message);
+            }
+        }
+
+        public void TimeStepFocusEnter(object sender, EventArgs e)
+        {
+            try
+            {
+                if (tbNumSteps.Text != "")
+                    iNumSteps = Int32.Parse(tbNumSteps.Text);
+                else
+                    iNumSteps = 0;
+                if (tbMaxTime.Text != "")
+                    fMaxTime = Single.Parse(tbMaxTime.Text);
+                else
+                    fMaxTime = 0;
+                if (iNumSteps < 0)
+                {
+                    iNumSteps *= -1;
+                    tbNumSteps.Text = iNumSteps.ToString();
+                }
+                if (fMaxTime < 0)
+                {
+                    fMaxTime *= -1.0f;
+                    tbMaxTime.Text = fMaxTime.ToString();
+                }
+                if (iNumSteps > 1 && fMaxTime > Constants.constants.fEpsilon)
+                {
+                    fTimeStep = fMaxTime / (iNumSteps - 1);
+                    tbTimeStep.Text = fTimeStep.ToString();
+                    bTimeStepDirty = false;
+                    bNumStepsDirty = false;
+                    bMaxTimeDirty = false;
+                }
+                tbStatus.Text = "";
+            }
+            catch (Exception ee)
+            {
+                tbStatus.Text = ee.Message;
+            }
+        }
+
+        public void NumStepsFocusEnter(object sender, EventArgs e)
+        {
+            try
+            {
+                if (tbTimeStep.Text != "")
+                    fTimeStep = Single.Parse(tbTimeStep.Text);
+                else
+                    fTimeStep = 0;
+                if (tbMaxTime.Text != "")
+                    fMaxTime = Single.Parse(tbMaxTime.Text);
+                else
+                    fMaxTime = 0;
+                if (fTimeStep < 0)
+                {
+                    fTimeStep *= -1.0f;
+                    tbTimeStep.Text = fTimeStep.ToString();
+                }
+                if (fMaxTime < 0)
+                {
+                    fMaxTime *= -1.0f;
+                    tbMaxTime.Text = fMaxTime.ToString();
+                }
+                if (fTimeStep > Constants.constants.fEpsilon && fMaxTime > Constants.constants.fEpsilon)
+                {
+                    iNumSteps = (int)(fMaxTime / fTimeStep + .1) + 1;
+                    tbNumSteps.Text = iNumSteps.ToString();
+                    bTimeStepDirty = false;
+                    bNumStepsDirty = false;
+                    bMaxTimeDirty = false;
+                }
+                tbStatus.Text = "";
+            }
+            catch(Exception ee)
+            {
+                tbStatus.Text = ee.Message;
+            }
+        }
+
+        public void MaxTimeFocusEnter(object sender, EventArgs e)
+        {
+            try
+            {
+                if (tbTimeStep.Text != "")
+                    fTimeStep = Single.Parse(tbTimeStep.Text);
+                else
+                    fTimeStep = 0.0f;
+                if (tbNumSteps.Text != "")
+                    iNumSteps = Int32.Parse(tbNumSteps.Text);
+                else
+                    iNumSteps = 0;
+                if (fTimeStep < 0)
+                {
+                    fTimeStep *= -1.0f;
+                    tbTimeStep.Text = fTimeStep.ToString();
+                }
+                if (iNumSteps < 0)
+                {
+                    iNumSteps *= -1;
+                    tbNumSteps.Text = iNumSteps.ToString();
+                }
+                if (iNumSteps > 1 && fTimeStep > Constants.constants.fEpsilon)
+                {
+                    fMaxTime = (iNumSteps - 1) * fTimeStep;
+                    tbMaxTime.Text = fMaxTime.ToString();
+                    bTimeStepDirty = false;
+                    bNumStepsDirty = false;
+                    bMaxTimeDirty = false;
+                }
+                tbStatus.Text = "";
+            }
+            catch (Exception ee)
+            {
+                tbStatus.Text = ee.Message;
+            }
+        }
+
+        private void TimeStepTextChanged(object sender, EventArgs e)
+        {
+            bTimeStepDirty = true;
+        }
+
+        private void NumStepsTextChanged(object sender, EventArgs e)
+        {
+            bNumStepsDirty = true;
+        }
+
+        private void MaxTimeTextChanged(object sender, EventArgs e)
+        {
+            bMaxTimeDirty = true;
+        }
+
+        private void VarsToPlotDoubleClick(object sender, EventArgs e)
+        {
+            tbVarsToPlot.Text = "";
+        }
+
+        private void RelativeClicked(object sender, EventArgs e)
+        {
+            tbRelative.Text = "100";
+        }
+    
+        private int IndexOfName(string strName)
+        {
+            int  iDex=0;
+            foreach (string s in straSDNames)
+            {
+                if (strName == s)
+                    return iDex;
+                iDex++;
+            }
+            return -1;
+        }
+
+        private int IndexOfConst(string strName)
+        {
+            foreach (InitCondInfo ic in aICs)
+            {
+                if (strName == ic.strLabel)
+                    return ic.iIndex;
+            }
+            return -1;
+        }
+
+        private void ValidateInputs()
+        {
+            float fFreq;
+            string strSummary, strName, strNames, strTmp;
+            int iPos,i;
+            if (fTimeStep < Constants.constants.fEpsilon)
+                strSummary = "Set the Simulation parameters";
+            else
+            {
+                if (tbVarsToPlot.Text == "")
+                    strSummary = "Select state variables to plot";
+                else
+                {
+                    strNames = tbVarsToPlot.Text.Replace("  ", ", ");
+                    strTmp = tbVarsToPlot.Text.Replace("  ", ",");
+                    strTmp = strTmp.Replace(" ", "");
+//                    strTmp = strNames.Replace(",","");
+                    iNumVars = tbVarsToPlot.Text.Length - strTmp.Length - 1;
+                    iaIndices = new int[iNumVars];
+                    sLabels = new string[iNumVars];
+                    i = 0;
+                    while (strTmp!="")
+                    {
+                        iPos = strTmp.IndexOf(',');
+                        if (iPos >= 0)
+                        {
+                            strName = strTmp.Substring(0, iPos);
+                            strTmp = strTmp.Substring(iPos + 1);
+                        }
+                        else
+                        {
+                            strName = strTmp;
+                            strTmp = "";
+                        }
+                        iaIndices[i] = IndexOfName(strName);// cbStateVarList.Items.IndexOf(strName);
+                        sLabels[i] = strName;//.Replace("m_sd", "");
+                        i++;
+                    }
+                    if (tbRelative.Text == "")
+                        strSummary = "Set Plot frequency to multiplier on time step (100 = every 100 time steps)";
+                    else
+                    {
+                        iFreq = Int32.Parse(tbRelative.Text);
+                        if (iFreq < 1)
+                            strSummary = "Set Plot frequency to positive integral value (100 = every 100 time steps)";
+                        else
+                            strSummary = string.Format("{0} will plot every {1:G4} seconds - every {2:D} timesteps", strNames, iFreq * fTimeStep, iFreq);
+                    }
+                }
+            }
+            tbStatus.Text = strSummary;
+        }
+
+        private void ValidateMouseClick(object sender, MouseEventArgs e)
+        {
+            ValidateInputs();
+        }
+
+        public delegate void SetStatus(string strMess);
+        public SetStatus delSetStatus;
+
+        public void SetStatusMessage(string strMess)
+        {
+            tbStatus.Text = strMess;
+        }
+
+        public delegate void UpdateGraph0(PlotEventArgs ee);
+        public UpdateGraph0 delUpdateGraph0;
+
+        public void UpdateGraphMethod0(PlotEventArgs ee)
+        {
+            try
+            {
+            if (ee.iDataNum < 0)
+            {
+                //special plot command
+                switch (-ee.iDataNum)
+                {
+                    case 1: //clear all existing data from plot
+                        chDataGraph.Series.Clear();
+                        break;
+                    case 2:
+                        //bDone = true;
+                        iExBtState = EX_STATE.EBS_EXECUTE;
+                        btnExecute.Text = "Execute";
+                        btnExecute.BackColor = clExBt;
+                        chDataGraph.Series.ResumeUpdates();
+                        labDone.Visible = true;
+                        break;
+                }
+            }
+            }
+            catch (Exception e)
+            {
+                tbStatus.Text = e.Message;
+            }
+        }
+
+        public delegate void UpdateGraph(int iCnt, PlotEventArgs[] aee);
+        public UpdateGraph delUpdateGraph;
+
+        public void UpdateGraphMethod(int iCnt, PlotEventArgs[] aee)
+        {
+            DataGridViewRow row;
+            int iSerNum;
+            float fX, fY;
+            try
+            {
+                bool bAbort = true;
+                if (iSRcnt<0)
+                    chDataGraph.Series.SuspendUpdates();
+                iSRcnt++;
+                if (iSRcnt == 10)
+                {
+                    chDataGraph.Series.ResumeUpdates();
+                    chDataGraph.Series.SuspendUpdates();
+                    iSRcnt = 0;
+                }
+                if (aee != null)
+                {
+                    for (int k = 0; k < iCnt; k++)
+                    {
+                        iSerNum = aee[k].iDataNum;
+                        fX = aee[k].dX;
+                        fY = aee[k].dY;
+                        bAbort = bAbort &&  double.IsNaN(fY);  //bAbort true iff all values fX, fY in loop are NaN
+                        if (iSerNum < 0)
+                        {
+                            //special plot command
+                            switch (-iSerNum)
+                            {
+                                case 1: //clear all existing data from plot
+                                    chDataGraph.Series.Clear();
+                                    break;
+                                case 2:
+                                    break;
+                            }
+                        }
+                        else
+                        {   // normal plot data command
+                            //plot x in control
+                            if (iSerNum == chDataGraph.Series.Count)
+                            {
+                                int iGrp, iItem, iSz = sLabels.GetLength(0);
+                                chDataGraph.Series.Add("Series" + (iSerNum + 1).ToString());
+                                chDataGraph.Series[iSerNum].ChartType = chartType;
+                                if (iSz > 0)
+                                {
+                                    iGrp = iSerNum / iSz + 1;
+                                    iItem = iSerNum % iSz;
+                                    chDataGraph.Series[iSerNum].LegendText = sLabels[iItem] + " " + iGrp.ToString();
+                                }
+                            }
+                            if (chDataGraph.Series.Count > iSerNum)
+                            {
+                                float fSF = 1.0F;
+                                //sw.Write("UpdateGraphMethod, {0}, {1}, {2}, {3}", k, iSerNum, aee[k].dX, aee[k].dY);
+                                //sw.WriteLine();
+                                //sw.Flush();
+                                chDataGraph.Series[iSerNum].Points.AddXY((double)fX, (double)fY);
+                                //set up results data grid
+                                if (bAddResultsHeaders)
+                                {
+                                    dgResults.Columns.Clear();
+                                    dgResults.Columns.Add("colTime", "Time (s)");
+                                    for (int j = 0; j < iaIndices.Length; j++)
+                                    {
+                                        int iDex = iaIndices[j];
+                                        if (bLive)
+                                            fSF = 1.0F;
+                                        else
+                                            fSF = faSFs[iDex];
+                                        string strHeader = String.Format("{0} (sf={1:G})", straSDNames.GetValue(iDex), fSF);//cbStateVarList.Items[iDex].ToString()
+                                        dgResults.Columns.Add("col" + j.ToString(), strHeader);
+                                    }
+                                    bAddResultsHeaders = false;
+                                }
+                                //sw.Write("UpdateGraphMethod, 1");
+                                //sw.WriteLine();
+                                if (iSerNum == 0)
+                                {
+                                    row = (DataGridViewRow)dgResults.Rows[0].Clone();
+                                    iResultRow = dgResults.Rows.Add(row);
+                                    dgResults.Rows[iResultRow].Cells[0].Value = fX.ToString();
+                                }
+                                if (bLive)
+                                    fSF = 1.0F;
+                                else
+                                    fSF = faSFs[iaIndices[iSerNum]];
+                                float fVal = fY * fSF;
+                                dgResults.Rows[iResultRow].Cells[iSerNum + 1].Value = fVal.ToString();
+                                //sw.Write("UpdateGraphMethod, 2");
+                                //sw.WriteLine();
+                                //sw.Flush();
+                            }
+                        }
+                    }
+                    if (bAbort)
+                    {
+                        tbStatus.Text = "NaN results, simulation aborted - most likely time step too large";
+                        strMsg = "NaN results have forced simulation to abort";
+                        AbortMouseClick(this, null);
+                    }
+                }
+            }
+            catch (Exception e)
+            {
+                tbStatus.Text = e.Message;
+            }
+        }
+
+        private void StateVarListDoubleClick(object sender, MouseEventArgs e)
+        {
+            cbStateVarList.Text = "";
+        }
+
+        private void StateVarListSelIndChanged(object sender, EventArgs e)
+        {
+            string strItem;
+            if (cbStateVarList.SelectedIndex >= 0)
+            {
+                cbStateVarList.Select(cbStateVarList.SelectedIndex, 1);
+                strItem = " " + cbStateVarList.SelectedItem.ToString() + " ";
+                if (tbVarsToPlot.Text.Contains(strItem))
+                {
+                    //item is present, remove
+                    tbVarsToPlot.Text = tbVarsToPlot.Text.Replace(strItem, "");
+                }
+                else
+                {
+                    //item is not present, add
+                    tbVarsToPlot.Text += strItem;
+                }
+            }
+        }
+
+        private void ResetPlotClick(object sender, EventArgs e)
+        {
+            chDataGraph.Series.Clear();
+            dgResults.Rows.Clear();
+            chDataGraph.Dispose();
+            chDataGraph = null;
+
+            this.chDataGraph = new System.Windows.Forms.DataVisualization.Charting.Chart();
+            ((System.ComponentModel.ISupportInitialize)(this.chDataGraph)).BeginInit();
+            System.Windows.Forms.DataVisualization.Charting.ChartArea chartArea1 = new System.Windows.Forms.DataVisualization.Charting.ChartArea();
+            System.Windows.Forms.DataVisualization.Charting.Legend legend1 = new System.Windows.Forms.DataVisualization.Charting.Legend();
+            System.Windows.Forms.DataVisualization.Charting.Series series1 = new System.Windows.Forms.DataVisualization.Charting.Series();
+            this.chDataGraph.BackColor = System.Drawing.Color.Black;
+            chartArea1.Name = "ChartArea1";
+            this.chDataGraph.ChartAreas.Add(chartArea1);
+            legend1.Name = "Legend1";
+            this.chDataGraph.Legends.Add(legend1);
+            this.chDataGraph.Location = new System.Drawing.Point(3, 221);
+            this.chDataGraph.Name = "chDataGraph";
+            series1.ChartArea = "ChartArea1";
+            series1.Legend = "Legend1";
+            series1.Name = "Series1";
+            this.chDataGraph.Series.Add(series1);
+            this.chDataGraph.Size = new System.Drawing.Size(485, 390);
+            this.chDataGraph.TabIndex = 16;
+            this.chDataGraph.Text = "chart1";
+            chDataGraph.Series[0].ChartType = chartType;
+            chDataGraph.ChartAreas[0].AxisX.Minimum = 0.0;
+            chDataGraph.ChartAreas[0].AxisY.Minimum = -10.0;
+            chDataGraph.ChartAreas[0].AxisY.Maximum = 10.0;
+            chDataGraph.ChartAreas[0].BackColor = System.Drawing.Color.Black;
+            chDataGraph.ChartAreas[0].AxisX.LineColor = System.Drawing.Color.White;
+            chDataGraph.ChartAreas[0].AxisX.LabelStyle.ForeColor = System.Drawing.Color.Red;
+            chDataGraph.ChartAreas[0].AxisX.Title = "Time";
+            chDataGraph.ChartAreas[0].AxisX.TitleForeColor = System.Drawing.Color.White;
+            chDataGraph.ChartAreas[0].AxisX.MajorGrid.LineColor = System.Drawing.Color.Gray;
+            chDataGraph.ChartAreas[0].AxisX.MajorGrid.LineDashStyle = ChartDashStyle.Dot;
+            chDataGraph.ChartAreas[0].AxisY.LineColor = System.Drawing.Color.White;
+            chDataGraph.ChartAreas[0].AxisY.LabelStyle.ForeColor = System.Drawing.Color.Red;
+            chDataGraph.ChartAreas[0].AxisY.LabelStyle.Interval = 1.0;
+            chDataGraph.ChartAreas[0].AxisY.Title = "";
+            chDataGraph.ChartAreas[0].AxisY.Crossing = 0.0;
+            chDataGraph.ChartAreas[0].AxisY.MajorGrid.LineColor = System.Drawing.Color.Gray;
+            chDataGraph.ChartAreas[0].AxisY.MajorGrid.LineDashStyle = ChartDashStyle.Dot;
+            chDataGraph.ChartAreas[0].AxisY.MajorGrid.Interval = 2.0;
+            this.Controls.Add(this.chDataGraph);
+            ((System.ComponentModel.ISupportInitialize)(this.chDataGraph)).EndInit();
+        }
+
+        private void AbortMouseClick(object sender, MouseEventArgs e)
+        {
+            try
+            {
+                if (iExBtState == EX_STATE.EBS_CONTINUE || iExBtState == EX_STATE.EBS_PAUSE)
+                {
+                    if (strMsg == "")
+                    {
+                        strMsg = "User elected to abort the simulation";
+                        if (MessageBox.Show(string.Format("{0}: OK - abort simulation, Cancel - continue with simulation", strMsg), "Abort Simulation", MessageBoxButtons.OKCancel) == DialogResult.Cancel)
+                        {
+                            strMsg = "";
+                            return;
+                        }
+                    }
+                    strMsg = "";
+                    iExBtState = EX_STATE.EBS_EXECUTE;
+                    btnExecute.Text = "Execute";
+                    thrProc.Abort();
+                    thrCons.Abort();
+                    Thread.Sleep(500);
+                    aee = null;
+                    readerFlag = false;
+                }
+            }
+            catch (Exception ee)
+            {
+                tbStatus.Text = ee.Message;
+            }
+        }
+
+        private void ResetClick(object sender, EventArgs e)
+        {
+            InitTabControl();
+//            ResetICs();
+        }
+
+        private void UpdateParameters()
+        {
+            int i2, i3;
+            iaInitInds = new int[iNumIC];
+            daInitVals = new double[iNumIC];
+            for (int i = 0; i < iNumIC; i++)
+            {
+                if (i >= 0 && i < dg1.Rows.Count-1)
+                {
+                    string s = dg1.Rows[i].Cells[0].Value.ToString();
+                    iaInitInds[i] = IndexOfConst(dg1.Rows[i].Cells[0].Value.ToString());// cbStateVarList.Items.IndexOf(dg1.Rows[i].Cells[0].Value.ToString());
+                    daInitVals[i] = Double.Parse(dg1.Rows[i].Cells[1].Value.ToString());
+                }
+                else if (i >= dg1.Rows.Count-1 && i < dg1.Rows.Count + dg2.Rows.Count-2)
+                {
+                    i2 = i - (dg1.Rows.Count - 1);
+                    iaInitInds[i] = IndexOfConst(dg2.Rows[i2].Cells[0].Value.ToString());// cbStateVarList.Items.IndexOf(dg2.Rows[i2].Cells[0].Value.ToString());
+                    daInitVals[i] = Double.Parse(dg2.Rows[i2].Cells[1].Value.ToString());
+                }
+                else
+                {
+                    i3 = i - (dg1.Rows.Count + dg2.Rows.Count-2);
+                    iaInitInds[i] = IndexOfConst(dg3.Rows[i3].Cells[0].Value.ToString());// cbStateVarList.Items.IndexOf(dg3.Rows[i3].Cells[0].Value.ToString());
+                    daInitVals[i] = Double.Parse(dg3.Rows[i3].Cells[1].Value.ToString());
+                }
+            }
+           
+        }
+
+        private void dg1CellLeave(object sender, DataGridViewCellEventArgs e)
+        {
+        }
+
+        private void StateVarListTextChanged(object sender, EventArgs e)
+        {
+        }
+
+        private void StateVarListKeyUp(object sender, KeyEventArgs e)
+        {
+            //char c = (char)e.KeyValue;
+            //if (c == 8 || c == 13)
+            //{
+            //    string strItem;
+            //    if(c == 8)
+            //    {
+            //        if(strEntry.Length >0)
+            //            strEntry = strEntry.Substring(0, strEntry.Length - 1);
+            //    }
+            //    else if (cbStateVarList.SelectedIndex >= 0)
+            //    {
+            //        //cbStateVarList.Select(cbStateVarList.SelectedIndex, 1);
+            //        //strItem = "|" + cbStateVarList.SelectedItem.ToString() + "|";
+            //        if (cbStateVarList.Items.Contains(strEntry))
+            //        {
+            //            strItem = "|" + strEntry + "|";
+            //            if (tbVarsToPlot.Text.Contains(strItem))
+            //            {
+            //                //item is present, remove
+            //                tbVarsToPlot.Text = tbVarsToPlot.Text.Replace(strItem, "");
+            //            }
+            //            else
+            //            {
+            //                //item is not present, add
+            //                tbVarsToPlot.Text += strItem;
+            //            }
+            //            cbStateVarList.Text = strEntry;
+            //            strEntry = "";
+            //        }
+            //    }
+            //}
+            //else if(c>=32 && c<127)
+            //{
+            //    string s;
+            //    strEntry += c.ToString();
+            //    int iN = cbStateVarList.Items.Count;
+            //    for (int i = 0; i < iN; i++)
+            //    {
+            //        s = cbStateVarList.Items[i].ToString();
+            //        if (s.StartsWith(strEntry))
+            //            cbStateVarList.Text = strEntry;
+            //    }
+            //}
+        }
+
+        private void StateVarListEnter(object sender, EventArgs e)
+        {
+            //strEntry = "";
+        }
+
+        private void ReplayListSelIndChanged(object sender, EventArgs e)
+        {
+            try
+            {
+                if (cbReplayList.Items.Count <= 0)
+                    return;
+                cbReplayList.Select(cbReplayList.SelectedIndex, 1);
+                strReplayFilePath = cbReplayList.SelectedItem.ToString();
+                bLive = false;
+                labReplayInd.Visible = true;
+                int iNVars;
+                bnryIn = new BinaryReader(File.Open(strReplayFilePath, FileMode.Open));
+                //read Header, mainly SFs
+                iNumSteps = bnryIn.ReadInt32();
+                iNVars = bnryIn.ReadInt32();    //not used here, only for reading rest of file
+                iFreq = bnryIn.ReadInt32();
+                fTimeStep = bnryIn.ReadSingle();
+                fMaxTime = bnryIn.ReadSingle();
+                bnryIn.BaseStream.Close();
+                bnryIn.Close();
+                bnryIn.Dispose();
+                tbMaxTime.Text = fMaxTime.ToString();
+                tbTimeStep.Text = fTimeStep.ToString();
+                tbNumSteps.Text = iNumSteps.ToString();
+                tbRelative.Text = iFreq.ToString();
+            }
+            catch (Exception ee)
+            {
+                tbStatus.Text = ee.Message;
+            }
+        }
+
+        private void Form1Resize(object sender, EventArgs e)
+        {
+            Size szMax;
+            Rectangle rect = Screen.FromControl(this).Bounds;
+            if(rect!=rectScreen)
+            {
+                //window has moved to new screen
+                bSaveNorm = true;
+                bSaveMax = true;
+                rectScreen = rect;
+            }
+
+            int iBotMarg = 50;
+            int iRightMarg = 10;
+            int iDeltaR1, iDeltaL1;
+            float fRatioX, fRatioY;
+            if (WindowState == FormWindowState.Maximized)
+            {
+                if (bSaveNorm)
+                {
+                    aSizes = new int[26];
+                    aSizes[0] = chDataGraph.Height;
+                    aSizes[1] = chDataGraph.Width;
+                    aSizes[2] = chDataGraph.Top;
+                    aSizes[3] = dgResults.Height;
+                    aSizes[4] = dgResults.Width;
+                    aSizes[5] = dgResults.Top;
+                    aSizes[6] = dgResults.Left;
+                    aSizes[7] = pnlInitVals.Height;
+                    aSizes[8] = pnlInitVals.Width;
+                    aSizes[9] = pnlInitVals.Left;
+                    aSizes[10] = btReset.Left;
+                    aSizes[11] = tcInit.Height;
+                    aSizes[12] = tcInit.Width;
+                    aSizes[13] = tcInit.Left;
+                    aSizes[14] = tabPage1.Width;
+                    aSizes[15] = tabPage1.Height;
+                    aSizes[16] = tabPage2.Width;
+                    aSizes[17] = tabPage2.Height;
+                    aSizes[18] = tabPage3.Width;
+                    aSizes[19] = tabPage3.Height;
+                    aSizes[20] = dg1.Width;
+                    aSizes[21] = dg1.Height;
+                    aSizes[22] = dg2.Width;
+                    aSizes[23] = dg2.Height;
+                    aSizes[24] = dg3.Width;
+                    aSizes[25] = dg3.Height;
+                    bSaveNorm = false;
+                }
+                if (bSaveMax)
+                {
+                    szMax = this.Size;
+                    fRatioX = ((float)szMax.Width) / szWindowSize.Width;
+                    fRatioY = ((float)szMax.Height) / szWindowSize.Height;
+                    chDataGraph.Height = (int)(chDataGraph.Height * fRatioY);
+                    chDataGraph.Width = (int)(chDataGraph.Width * fRatioX);
+                    chDataGraph.Top = this.Size.Height - chDataGraph.Height - iBotMarg;
+                    dgResults.Height = (int)(dgResults.Height * fRatioY);
+                    dgResults.Width = (int)(dgResults.Width * fRatioX);
+                    dgResults.Top = this.Size.Height - dgResults.Height - iBotMarg;
+                    dgResults.Left = (this.Right-this.Left) - dgResults.Width - iRightMarg;
+                    iDeltaR1 = pnlInitVals.Right - (pnlInitVals.Left + btReset.Right);
+                    iDeltaL1 = tcInit.Left - pnlInitVals.Left;
+                    pnlInitVals.Height = (int)(pnlInitVals.Height * fRatioY);
+                    pnlInitVals.Width = (int)(pnlInitVals.Width * fRatioX);
+                    pnlInitVals.Left = (this.Right - this.Left) - pnlInitVals.Width - iRightMarg;
+                    btReset.Left = pnlInitVals.Right - btReset.Width - iDeltaR1 - pnlInitVals.Left;
+                    tcInit.Height = (int)(tcInit.Height * fRatioY);
+                    tcInit.Width = (int)(tcInit.Width * fRatioX);
+                    tcInit.Left = pnlInitVals.Left + iDeltaL1;
+                    tabPage1.Height = (int)(tabPage1.Height * fRatioY);
+                    tabPage1.Width = (int)(tabPage1.Width * fRatioX);
+                    tabPage2.Height = (int)(tabPage2.Height * fRatioY);
+                    tabPage2.Width = (int)(tabPage2.Width * fRatioX);
+                    tabPage3.Height = (int)(tabPage3.Height * fRatioY);
+                    tabPage3.Width = (int)(tabPage3.Width * fRatioX);
+                    dg1.Height = (int)(dg1.Height * fRatioY);
+                    dg1.Width = (int)(dg1.Width * fRatioX);
+                    dg2.Height = (int)(dg2.Height * fRatioY);
+                    dg2.Width = (int)(dg2.Width * fRatioX);
+                    dg3.Height = (int)(dg3.Height * fRatioY);
+                    dg3.Width = (int)(dg3.Width * fRatioX);
+                    aSizes2 = new int[26];
+                    aSizes2[0] = chDataGraph.Height;
+                    aSizes2[1] = chDataGraph.Width;
+                    aSizes2[2] = chDataGraph.Top;
+                    aSizes2[3] = dgResults.Height;
+                    aSizes2[4] = dgResults.Width;
+                    aSizes2[5] = dgResults.Top;
+                    aSizes2[6] = dgResults.Left;
+                    aSizes2[7] = pnlInitVals.Height;
+                    aSizes2[8] = pnlInitVals.Width;
+                    aSizes2[9] = pnlInitVals.Left;
+                    aSizes2[10] = btReset.Left;
+                    aSizes2[11] = tcInit.Height;
+                    aSizes2[12] = tcInit.Width;
+                    aSizes2[13] = tcInit.Left;
+                    aSizes2[14] = tabPage1.Width;
+                    aSizes2[15] = tabPage1.Height;
+                    aSizes2[16] = tabPage2.Width;
+                    aSizes2[17] = tabPage2.Height;
+                    aSizes2[18] = tabPage3.Width;
+                    aSizes2[19] = tabPage3.Height;
+                    aSizes2[20] = dg1.Width;
+                    aSizes2[21] = dg1.Height;
+                    aSizes2[22] = dg2.Width;
+                    aSizes2[23] = dg2.Height;
+                    aSizes2[24] = dg3.Width;
+                    aSizes2[25] = dg3.Height;
+                }
+                if (!bSaveMax)
+                {
+                    chDataGraph.Height = aSizes2[0];
+                    chDataGraph.Width = aSizes2[1];
+                    chDataGraph.Top = aSizes2[2];
+                    dgResults.Height = aSizes2[3];
+                    dgResults.Width = aSizes2[4];
+                    dgResults.Top = aSizes2[5];
+                    dgResults.Left = aSizes2[6];
+                    pnlInitVals.Height = aSizes2[7];
+                    pnlInitVals.Width = aSizes2[8];
+                    pnlInitVals.Left = aSizes2[9];
+                    btReset.Left = aSizes2[10];
+                    tcInit.Height = aSizes2[11];
+                    tcInit.Width = aSizes2[12];
+                    tcInit.Left = aSizes2[13];
+                    tabPage1.Width = aSizes2[14];
+                    tabPage1.Height = aSizes2[15];
+                    tabPage2.Width = aSizes2[16];
+                    tabPage2.Height = aSizes2[17];
+                    tabPage3.Width = aSizes2[18];
+                    tabPage3.Height = aSizes2[19];
+                    dg1.Width = aSizes2[20];
+                    dg1.Height = aSizes2[21];
+                    dg2.Width = aSizes2[22];
+                    dg2.Height = aSizes2[23];
+                    dg3.Width = aSizes2[24];
+                    dg3.Height = aSizes2[25];
+                }
+                bSaveMax = false;
+            }
+            if (WindowState == FormWindowState.Normal)
+            {
+                chDataGraph.Height = aSizes[0];
+                chDataGraph.Width = aSizes[1];
+                chDataGraph.Top = aSizes[2];
+                dgResults.Height = aSizes[3];
+                dgResults.Width = aSizes[4];
+                dgResults.Top = aSizes[5];
+                dgResults.Left = aSizes[6];
+                pnlInitVals.Height = aSizes[7];
+                pnlInitVals.Width = aSizes[8];
+                pnlInitVals.Left = aSizes[9];
+                btReset.Left = aSizes[10];
+                tcInit.Height = aSizes[11];
+                tcInit.Width = aSizes[12];
+                tcInit.Left = aSizes[13];
+                tabPage1.Width = aSizes[14];
+                tabPage1.Height = aSizes[15];
+                tabPage2.Width = aSizes[16];
+                tabPage2.Height = aSizes[17];
+                tabPage3.Width = aSizes[18];
+                tabPage3.Height = aSizes[19];
+                dg1.Width = aSizes[20];
+                dg1.Height = aSizes[21];
+                dg2.Width = aSizes[22];
+                dg2.Height = aSizes[23];
+                dg3.Width = aSizes[24];
+                dg3.Height = aSizes[25];
+            }
+        }
+
+        private void PlLabsClick(object sender, EventArgs e)
+        {
+            //open a modal dlg displaying Model Variables and Plot Labels - allow labels to be changed
+            PlLabels formPlLabs = new PlLabels(sModName);
+            DialogResult dr = formPlLabs.ShowDialog(this);
+            if (dr == DialogResult.OK)
+            {
+                //if user OKs, change comments in .h file to reflect new lables
+                formPlLabs.SaveLabels(ref aICs);
+                InitTabControl();
+            }
+
+            //reload the list of labels
+            MakeStateLookup();
+        }
+
+        private void aboutToolStripMenuItem1_Click(object sender, EventArgs e)
+        {
+            frmAboutSUPO formAbout = new frmAboutSUPO();
+            DialogResult dr = formAbout.ShowDialog(this);
+
+        }
+
+        private void Form1Closing(object sender, FormClosingEventArgs e)
+        {
+            if (thrProc!=null && thrProc.IsAlive)
+                thrProc.Abort();
+            if (thrCons!=null && thrCons.IsAlive)
+                thrCons.Abort();
+
+        }
+
+    }
+}

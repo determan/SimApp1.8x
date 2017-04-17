@@ -1,0 +1,9 @@
+C:\UIATest\UIATest\UIATest\bin\Release\UIATest.exe.config
+C:\UIATest\UIATest\UIATest\bin\Release\UIATest.exe
+C:\UIATest\UIATest\UIATest\bin\Release\UIATest.pdb
+C:\UIATest\UIATest\UIATest\bin\Release\ActiproSoftware.Shared.Net20.dll
+C:\UIATest\UIATest\UIATest\obj\Release\UIATest.Properties.Resources.resources
+C:\UIATest\UIATest\UIATest\obj\Release\UIATest.csproj.GenerateResource.Cache
+C:\UIATest\UIATest\UIATest\obj\Release\UIATest.exe
+C:\UIATest\UIATest\UIATest\obj\Release\UIATest.pdb
+C:\UIATest\UIATest\UIATest\obj\Release\UIATest.csprojResolveAssemblyReference.cache

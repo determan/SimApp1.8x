@@ -1,0 +1,1 @@
+Please see the "SimApp 1.8x Release Notes" pdf document for all setup, install and compilation directions.

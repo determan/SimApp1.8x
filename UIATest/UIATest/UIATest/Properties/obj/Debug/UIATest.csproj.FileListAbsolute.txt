@@ -1,0 +1,8 @@
+c:\UIATest\UIATest\UIATest\bin\Debug\UIATest.exe.config
+c:\UIATest\UIATest\UIATest\bin\Debug\UIATest.exe
+c:\UIATest\UIATest\UIATest\bin\Debug\UIATest.pdb
+c:\UIATest\UIATest\UIATest\obj\Debug\UIATest.Properties.Resources.resources
+c:\UIATest\UIATest\UIATest\obj\Debug\UIATest.csproj.GenerateResource.Cache
+c:\UIATest\UIATest\UIATest\obj\Debug\UIATest.exe
+c:\UIATest\UIATest\UIATest\obj\Debug\UIATest.pdb
+C:\UIATest\UIATest\UIATest\bin\Debug\ActiproSoftware.Shared.Net20.dll
